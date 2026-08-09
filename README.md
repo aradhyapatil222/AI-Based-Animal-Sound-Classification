@@ -66,7 +66,7 @@ Expected correct predictions for the included samples:
 
 ---
 
-## Project Layout (what ships to GitHub)
+## Project Layout 
 
 ```
 Project 1/
@@ -90,7 +90,7 @@ Project 1/
 
 ---
 
-## How It Works (brief)
+## How It Works 
 
 1. **Audio → Features** (matches the training pipeline exactly):
    - `librosa.load(..., sr=22050, duration=3)` — mono, 22.05 kHz, clipped/padded to 3 s
@@ -105,7 +105,7 @@ Project 1/
 
 ---
 
-## Troubleshooting (fresh machine)
+## Troubleshooting 
 
 | Problem | Fix |
 |---------|-----|
