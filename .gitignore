@@ -1,0 +1,56 @@
+# ===== Python / virtual env =====
+venv/
+env/
+ENV/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ===== Package / build artifacts =====
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===== Editor / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Streamlit / runtime =====
+.streamlit/secrets.toml
+
+# ===== Project temp & diagnostic files =====
+*.log
+*.tmp
+test_output.txt
+hello.txt
+pip_freeze_all.txt
+
+diagnostic.py
+fix_stats.py
+import_check.py
+test_model.py
+validate_fix.py
+
+# ===== Channel-wise stat alternatives (not used by app.py, keep global scalar pair)
+feature_mean_ch.npy
+feature_std_ch.npy

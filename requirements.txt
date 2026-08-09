@@ -1,0 +1,6 @@
+streamlit==1.61.1
+numpy==2.4.6
+tensorflow==2.21.0
+librosa==0.11.0
+plotly==6.9.0
+soundfile==0.14.0
