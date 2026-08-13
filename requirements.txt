@@ -1,4 +1,6 @@
 streamlit==1.61.1
+fastapi==0.121.0
+uvicorn==0.38.0
 numpy==2.4.6
 tensorflow==2.21.0
 librosa==0.11.0

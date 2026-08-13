@@ -1,11 +1,13 @@
 # Real-Time Animal Voice Detection & Classifier
 
-A Streamlit web app that classifies animal sounds (10 ESC-50 animal classes) using a quantized TFLite CNN. Two input modes are supported:
+An AI system that classifies animal sounds (10 ESC-50 animal classes) using a quantized TFLite CNN, available in two frontends:
 
-- **Upload an audio file** (`.wav` / `.mp3` / `.ogg`)
-- **Record directly from the microphone** (3–5 second capture, built-in)
+| Frontend | Stack | Entry point |
+|----------|-------|-------------|
+| **WildEcho AI** (default, modern UI) | React + TypeScript + Vite calling a **FastAPI** backend | `server.py` + `frontend/` |
+| **Streamlit app** (classic UI) | Streamlit, self-contained | `app.py` |
 
-Results include the predicted animal, confidence %, a log-mel spectrogram, and a per-class probability bar chart.
+Both support uploading an audio file (`.wav` / `.mp3` / `.ogg`) and (Streamlit) recording directly from the microphone. Results include the predicted animal, confidence %, a log-mel spectrogram, and a per-class probability breakdown.
 
 ---
 
@@ -53,7 +55,29 @@ pip install -r requirements.txt
 
 (TensorFlow is the largest package — expect several minutes.)
 
-### Step 4 — Run the web app
+### Step 4 — Run the app
+
+You can run either frontend. **Option A (React)** is recommended.
+
+#### Option A — WildEcho AI: FastAPI backend + React frontend
+
+**Terminal 1 — start the API server (http://localhost:8000):**
+
+```bash
+python server.py
+```
+
+**Terminal 2 — start the React dev server:**
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** — the frontend talks to the FastAPI backend at `http://127.0.0.1:8000`.
+
+#### Option B — Streamlit app
 
 ```bash
 streamlit run app.py
@@ -64,7 +88,7 @@ Your browser will automatically open **http://localhost:8501** — that's the ap
 ### Step 5 — Try it
 
 1. **Upload mode:** choose any of the 6 sample `.wav` files included, or upload your own animal clip (3–5 s recommended).
-2. **Microphone mode:** pick a recording duration (3–5 s), click *Start Recording*, produce the sound, then classify.
+2. **Microphone mode (Streamlit only):** pick a recording duration (3–5 s), click *Start Recording*, produce the sound, then classify.
 3. Click **Classify Sound** / **Classify Recorded Sound** to run inference.
 
 Expected predictions for the 3 hand-labeled samples included in the repo (these are *not* a benchmark — see the accuracy note above):
@@ -83,10 +107,17 @@ Expected predictions for the 3 hand-labeled samples included in the repo (these 
 
 ```
 Project 1/
-├── app.py                          # Main Streamlit web app  <-- entry point
+├── app.py                          # Main Streamlit web app  <-- classic entry point
+├── server.py                       # FastAPI backend (WildEcho AI API, port 8000)  <-- API entry point
 ├── requirements.txt                # Exact pinned dependency versions
 ├── README.md                       # This file
 ├── .gitignore                      # Ignores venv/, logs, cache, temp scripts
+│
+├── frontend/                       # React + TypeScript + Vite UI (WildEcho AI)
+│   ├── src/                        #   Components, hooks, types
+│   ├── index.html                  #   Vite entry
+│   ├── package.json                #   npm scripts: dev / build / lint / preview
+│   └── vite.config.ts              #   Dev server + build config
 │
 ├── animal_sound_model_quant_final.tflite   # PRIMARY model (small MobileNet-like CNN)
 ├── animal_sound_model_quant.tflite         # FALLBACK model (kept for reference)
@@ -106,6 +137,19 @@ Project 1/
 
 ---
 
+## WildEcho AI API (FastAPI)
+
+The backend exposes a small REST API on **http://localhost:8000**:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Model file, classes, input shape, standardization stats, server status |
+| `/api/samples` | GET | List of bundled sample `.wav` clips |
+| `/api/sample/{filename}` | GET | Stream a bundled sample clip (`audio/wav`) |
+| `/api/classify` | POST | Multipart: `file` + `norm_option` (form) + `use_voting` (bool) + `voting_step` (float) → prediction, top-3, per-class probabilities, spectrogram matrix, and signal stats |
+
+Interactive docs are available at **http://localhost:8000/docs** (Swagger UI). CORS is wide-open so the Vite dev server can call it directly.
+
 ## How It Works 
 
 ### Audio → Features (matches the training pipeline exactly)
@@ -117,7 +161,7 @@ Project 1/
 
 ### Standardization
 
-Configurable in the sidebar (defaults to *Per-Channel Stats* — recommended):
+Configurable via `norm_option` (Streamlit sidebar or API form field; defaults to *Per-Channel Stats* — recommended):
 
 | Method | Formula / source | Notes |
 |--------|------------------|-------|
@@ -145,10 +189,12 @@ example files and have been removed from every code path in this repo.
 
 ---
 
-## Inference-time knobs (built into the sidebar of `app.py`)
+## Inference-time knobs
 
-- **Standardization method toggle** — directly compare Global vs Per-Channel on any input.
-- **Time-Slice Voting (on/off + step-size)** — enable for anything ≥ 4 s.
+Same settings exist in the Streamlit sidebar (`app.py`) and as multipart form fields on `/api/classify` (used by the React frontend):
+
+- **Standardization method toggle** (`norm_option`) — directly compare Global vs Per-Channel on any input.
+- **Time-Slice Voting** (`use_voting`, `voting_step`) — enable for anything ≥ 4 s.
 - **Top-3 predictions** are always displayed regardless of confidence, not just Top-1.
   The correct class very often lives at rank 2–3 when Top-1 is wrong on this small model.
 
@@ -165,6 +211,10 @@ example files and have been removed from every code path in this repo.
 | Browser blocks microphone access (`getUserMedia` errors) | Streamlit must be served over **HTTPS** or **localhost** for mic permissions to work. On a remote server, use `--server.address 0.0.0.0` with an HTTPS reverse proxy, or `ssh -L 8501:localhost:8501` tunneling. |
 | Port 8501 already in use | `streamlit run app.py --server.port 8502` |
 | Slow first load of `load_tflite_model()` | Normal — TFLite interpreter + TensorFlow first-load init caches after first run. |
+| Frontend shows "Backend server offline" | Start the API first: `python server.py`, then reload **http://localhost:5173**. |
+| React app doesn't reach the API | Confirm the server runs on **port 8000** and that `API_BASE` in `frontend/src/App.tsx` matches (default `http://127.0.0.1:8000`). |
+| `ModuleNotFoundError: fastapi / uvicorn` | `pip install -r requirements.txt` (now includes both). |
+| Port 8000 already in use | Change the port in the `uvicorn.run(...)` line at the bottom of `server.py` and update `API_BASE` in `frontend/src/App.tsx` to match. |
 
 ---
 
