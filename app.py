@@ -343,6 +343,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- Constants & Classes ---
+# NOTE: this app now runs YAMNet embeddings -> classifier_head1.tflite instead
+# of the old spectrogram-CNN. Class list is loaded from label_map.json (produced
+# by the training notebook) so it always matches the model actually shipped.
+import json as _json
+
+_LABEL_MAP_PATH = "label_map.json"
+MODEL_PATH = "classifier_head1.tflite"
+MODEL_NAME = "classifier_head1"
+
+if not os.path.exists(MODEL_PATH):
+    st.error(f"❌ Could not find {MODEL_PATH}. Place the trained classifier head tflite file next to app.py.")
+    st.stop()
+
+if os.path.exists(_LABEL_MAP_PATH):
+    with open(_LABEL_MAP_PATH) as _f:
+        _raw_label_map = _json.load(_f)
+    ANIMAL_CLASSES = [_raw_label_map[str(i)].capitalize() for i in range(len(_raw_label_map))]
+else:
+    ANIMAL_CLASSES = [
+        'Cat', 'Chicken', 'Cow', 'Cricket', 'Dog', 'Donkey',
+        'Elephant', 'Frog', 'Lion', 'Monkey', 'Pig', 'Sheep', 'Squirrel'
+    ]
+
+ANIMAL_EMOJI = {
+    'Cat': '🐱', 'Chicken': '🐔', 'Cow': '🐮', 'Cricket': '🦗', 'Dog': '🐶',
+    'Donkey': '🐴', 'Elephant': '🐘', 'Frog': '🐸', 'Lion': '🦁',
+    'Monkey': '🐒', 'Pig': '🐷', 'Sheep': '🐑', 'Squirrel': '🐿️',
+    'Not_animal': '🔇',
+}
+
+# Audio / windowing constants — MUST match the training notebook
+SR = 16000
+WINDOW_DURATION = 1.0
+WINDOW_SAMPLES = int(SR * WINDOW_DURATION)
+DURATION = WINDOW_DURATION  # kept for compatibility with helper functions below
+SILENCE_RMS_THRESHOLD = 0.01
+
 # --- Hero header ---
 st.markdown("""
 <div class="hero">
@@ -351,103 +389,20 @@ st.markdown("""
      <b>Edge TFLite</b> model. Upload an audio clip or record live from your microphone —
      get an instant prediction.</p>
   <div class="chips">
-    <span class="chip">🐶 Dog</span><span class="chip">🐓 Rooster</span><span class="chip">🐷 Pig</span>
-    <span class="chip">🐮 Cow</span><span class="chip">🐸 Frog</span><span class="chip">🐱 Cat</span>
-    <span class="chip">🐔 Hen</span><span class="chip">🦗 Insects</span><span class="chip">🐑 Sheep</span>
-    <span class="chip">🐦 Crow</span>
+    {chips}
   </div>
 </div>
-""", unsafe_allow_html=True)
+""".format(chips="".join(f'<span class="chip">{ANIMAL_EMOJI.get(c, "🐾")} {c}</span>' for c in ANIMAL_CLASSES)), unsafe_allow_html=True)
 
-# --- Constants & Classes ---
-ANIMAL_CLASSES = ['Dog', 'Rooster', 'Pig', 'Cow', 'Frog', 'Cat', 'Hen', 'Insects', 'Sheep', 'Crow']
-ANIMAL_EMOJI = {
-    'Dog': '🐶', 'Rooster': '🐓', 'Pig': '🐷', 'Cow': '🐮', 'Frog': '🐸',
-    'Cat': '🐱', 'Hen': '🐔', 'Insects': '🦗', 'Sheep': '🐑', 'Crow': '🐦',
-}
-SR = 22050
-DURATION = 3
-N_FFT = 2048
-HOP_LENGTH = 512
-N_MELS = 128
-N_MFCC = 20
-
-# Defaults used when the (hidden-by-default) advanced settings are untouched.
-NORM_DEFAULT = "Global Stats (400-clip training, VERIFIED default)"
-
-# --- Model Selection: prefer FINAL model which passes validation ---
-MODEL_CANDIDATES = [
-    "animal_sound_model_quant_final.tflite",
-    "animal_sound_model_quant.tflite",
-]
-MODEL_PATH = None
-MODEL_NAME = None
-for candidate in MODEL_CANDIDATES:
-    if os.path.exists(candidate):
-        MODEL_PATH = candidate
-        MODEL_NAME = candidate.replace(".tflite", "")
-        break
-
-if MODEL_PATH is None:
-    st.error(f"❌ No TFLite model file found. Looked for: {MODEL_CANDIDATES}")
-    st.stop()
-
-# --- Real training-set statistics (computed over 400 ESC-50 animal clips) ---
-REAL_TRAINING_MEAN = -25.852587
-REAL_TRAINING_STD  =  34.965031
-
-# --- Load standardization stats (GLOBAL scalar + CHANNEL-WISE variants) ---
-GLOBAL_MEAN = None
-GLOBAL_STD = None
-CHANNEL_MEAN = None
-CHANNEL_STD = None
-CHANNEL_STATS_AVAILABLE = False
-STATS_FILE_SOURCE = None
-
-if os.path.exists("feature_mean.npy") and os.path.exists("feature_std.npy"):
-    try:
-        GLOBAL_MEAN = float(np.load("feature_mean.npy"))
-        GLOBAL_STD = float(np.load("feature_std.npy"))
-        STATS_FILE_SOURCE = "feature_mean.npy / feature_std.npy (400-clip verified)"
-    except Exception:
-        GLOBAL_MEAN = None
-        GLOBAL_STD = None
-
-if os.path.exists("feature_mean_ch.npy") and os.path.exists("feature_std_ch.npy"):
-    try:
-        _ch_m = np.load("feature_mean_ch.npy").reshape(1, 1, 1, 2).astype(np.float32)
-        _ch_s = np.load("feature_std_ch.npy").reshape(1, 1, 1, 2).astype(np.float32)
-        if _ch_m.shape == (1, 1, 1, 2) and _ch_s.shape == (1, 1, 1, 2):
-            CHANNEL_MEAN = _ch_m
-            CHANNEL_STD = _ch_s
-            CHANNEL_STATS_AVAILABLE = True
-    except Exception:
-        CHANNEL_MEAN = None
-        CHANNEL_STD = None
-        CHANNEL_STATS_AVAILABLE = False
-
-if GLOBAL_MEAN is None:
-    GLOBAL_MEAN = REAL_TRAINING_MEAN
-    GLOBAL_STD  = REAL_TRAINING_STD
-    STATS_FILE_SOURCE = (
-        "CODE FALLBACK — real training global mean/std: "
-        "mean={:.4f}, std={:.4f}"
-    ).format(REAL_TRAINING_MEAN, REAL_TRAINING_STD)
-
-# --- Standardization dispatcher (reads current widget value from session state) ---
+# No standardization step needed: YAMNet embeddings are fed to the classifier
+# head as-is (this matches how the head was trained in the notebook).
 def standardize_features(features):
-    norm = st.session_state.get("norm_option", NORM_DEFAULT)
-    if norm.startswith("Global Stats"):
-        return (features - GLOBAL_MEAN) / (GLOBAL_STD + 1e-6)
-    elif norm.startswith("Per-Channel Stats"):
-        if not CHANNEL_STATS_AVAILABLE:
-            st.error("Per-Channel stats unavailable on this machine; falling back to Global.")
-            return (features - GLOBAL_MEAN) / (GLOBAL_STD + 1e-6)
-        return (features - CHANNEL_MEAN) / (CHANNEL_STD + 1e-6)
-    else:  # Per-Sample Standardization (NOT recommended)
-        f_mean = np.mean(features, keepdims=True)
-        f_std = np.std(features, keepdims=True)
-        return (features - f_mean) / (f_std + 1e-6)
+    return features
+
+@st.cache_resource
+def load_yamnet_model():
+    import tensorflow_hub as hub
+    return hub.load("https://tfhub.dev/google/yamnet/1")
 
 # --- Audio-format detection from magic bytes ---
 def detect_audio_mime(raw_bytes):
@@ -562,43 +517,32 @@ def load_tflite_model():
     interpreter.allocate_tensors()
     return interpreter
 
-# --- Feature extraction for a single (offset, duration) segment ---
-def _extract_window(file_bytes, offset_sec, duration_sec):
-    librosa = _ensure_librosa()
+def _is_silent(window):
+    return float(np.sqrt(np.mean(window ** 2))) < SILENCE_RMS_THRESHOLD
+
+# --- Feature extraction: one 1s window -> YAMNet embedding (+ log-mel for display) ---
+def _extract_window(file_bytes, offset_sec, duration_sec=WINDOW_DURATION):
     y, sr = _load_audio_bytes(file_bytes, sr=SR, offset=offset_sec, duration=duration_sec)
-
-    target_length = sr * DURATION
-    if len(y) < target_length:
-        y = np.pad(y, (0, target_length - len(y)))
+    if len(y) < WINDOW_SAMPLES:
+        y = np.pad(y, (0, WINDOW_SAMPLES - len(y)))
     else:
-        y = y[:target_length]
+        y = y[:WINDOW_SAMPLES]
+    y = y.astype(np.float32)
 
-    mel_spec = librosa.feature.melspectrogram(
-        y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS
-    )
-    log_mel = librosa.power_to_db(mel_spec, ref=np.max)
-
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
-    delta = librosa.feature.delta(mfcc)
-    delta2 = librosa.feature.delta(mfcc, order=2)
-    mfcc_stacked = np.vstack([mfcc, delta, delta2])
-
-    mfcc_resized = np.pad(
-        mfcc_stacked, ((0, 128 - mfcc_stacked.shape[0]), (0, 0)), mode="constant"
-    )
-
-    feature_matrix = np.stack([log_mel, mfcc_resized], axis=-1)
-    return np.expand_dims(feature_matrix, axis=0).astype(np.float32)
+    yamnet_model = load_yamnet_model()
+    scores, embeddings, spectrogram = yamnet_model(y)
+    import tensorflow as tf
+    embedding = tf.reduce_mean(embeddings, axis=0).numpy().astype(np.float32)  # (1024,)
+    log_mel = spectrogram.numpy()  # (frames, 64) — for spectrogram display only
+    return embedding[np.newaxis, :], log_mel, y
 
 # --- Legacy single-window extractor (still used for spectrogram display) ---
 def extract_dual_channel_features(file_bytes):
-    return _extract_window(file_bytes, offset_sec=0.0, duration_sec=DURATION)
+    embedding, log_mel, _ = _extract_window(file_bytes, offset_sec=0.0, duration_sec=WINDOW_DURATION)
+    return log_mel  # used only by the spectrogram viewer, not fed to the model
 
 # --- Full classification: features (optionally multi-window voting) -> probabilities ---
 def run_inference(file_bytes):
-    import io
-
-    librosa = _ensure_librosa()
     interpreter = load_tflite_model()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
@@ -606,38 +550,47 @@ def run_inference(file_bytes):
     use_voting = st.session_state.get("use_voting", True)
     voting_step = st.session_state.get("voting_step", 0.5)
 
-    # Always compute the t=0 single window for spectrogram display
-    feat_t0 = extract_dual_channel_features(file_bytes)
-    feat_t0_normed = standardize_features(feat_t0)
+    # Always compute the t=0 embedding for spectrogram display + fallback prediction
+    first_embedding, first_log_mel, first_window = _extract_window(file_bytes, offset_sec=0.0)
 
-    if not use_voting:
-        interpreter.set_tensor(input_details[0]["index"], feat_t0_normed)
-        interpreter.invoke()
-        probs = interpreter.get_tensor(output_details[0]["index"])[0]
-        return probs, feat_t0_normed, 1
-
-    # Voting: find actual audio duration, slide DURATION-s windows
     y_full, _ = _load_audio_bytes(file_bytes, sr=SR)
     total_dur = len(y_full) / SR
 
-    windows = []
+    if not use_voting or total_dur <= WINDOW_DURATION:
+        interpreter.set_tensor(input_details[0]["index"], first_embedding)
+        interpreter.invoke()
+        probs = interpreter.get_tensor(output_details[0]["index"])[0]
+        return probs, first_log_mel, 1
+
+    # Voting: slide 1s windows (hop = voting_step) across the whole clip,
+    # matching the 50% overlap windowing used to build the training set.
+    offsets = []
     t = 0.0
-    while t + DURATION <= max(total_dur, DURATION) + 1e-9:
-        windows.append(t)
+    while t + WINDOW_DURATION <= max(total_dur, WINDOW_DURATION) + 1e-9:
+        offsets.append(t)
         t += voting_step
-    if not windows:
-        windows = [0.0]
+    if not offsets:
+        offsets = [0.0]
 
     votes = []
-    for t0 in windows:
-        feat = _extract_window(file_bytes, offset_sec=t0, duration_sec=DURATION)
-        feat_n = standardize_features(feat).astype(np.float32)
-        interpreter.set_tensor(input_details[0]["index"], feat_n)
+    for i, t0 in enumerate(offsets):
+        if i == 0:
+            embedding, window = first_embedding, first_window
+        else:
+            embedding, _, window = _extract_window(file_bytes, offset_sec=t0)
+        if _is_silent(window):
+            continue
+        interpreter.set_tensor(input_details[0]["index"], embedding)
         interpreter.invoke()
         votes.append(interpreter.get_tensor(output_details[0]["index"])[0])
 
+    if not votes:
+        interpreter.set_tensor(input_details[0]["index"], first_embedding)
+        interpreter.invoke()
+        votes = [interpreter.get_tensor(output_details[0]["index"])[0]]
+
     avg_probs = np.mean(votes, axis=0)
-    return avg_probs, feat_t0_normed, len(windows)
+    return avg_probs, first_log_mel, len(votes)
 
 # --- Classification pipeline (shared by upload + record paths) ---
 def classify_audio_bytes(file_bytes):
@@ -667,21 +620,20 @@ def classify_audio_bytes(file_bytes):
         )
         return
 
-    # 2) Silent / nearly-silent input → the model will output its bias class (often Crow)
+    # 2) Silent / nearly-silent input → prediction will be unreliable / essentially random
     NEAR_SILENCE_RMS = 1e-4
     VERY_SHORT_S = 0.25
     if dur < VERY_SHORT_S:
         st.warning(
             f"⚠️ Audio loaded but it is only **{dur:.2f} s** — too short for classification "
-            f"(need at least ~{VERY_SHORT_S:.1f} s of sound). The model will guess its bias class "
-            f"(often Crow), not what you recorded. **Re-record with at least 1–2 s of actual sound.**"
+            f"(need at least ~{VERY_SHORT_S:.1f} s of sound). **Re-record with at least 1–2 s of actual sound.**"
         )
         return
     if peak < 1e-3 or rms < NEAR_SILENCE_RMS:
         st.warning(
             "⚠️ **The decoded audio is essentially silent.**  \n"
             f"Signal stats: length={dur:.2f}s, peak={peak:.2e}, RMS={rms:.2e}  \n"
-            "This almost always produces a fake **Crow** prediction (the network's highest-bias class), "
+            "Classifying silence produces an unreliable, essentially random prediction, "
             "NOT a real classification.  \n\n"
             "**Likely causes & fixes:**  \n"
             "- Wrong mic selected in the browser (e.g. a disabled/muted device). → Click the 🎤 icon in the "
@@ -710,7 +662,7 @@ def classify_audio_bytes(file_bytes):
     # --- Result cards ---
     c1, c2 = st.columns([1.15, 1], gap="medium")
     with c1:
-        windows_note = f"averaged over {n_windows} windows" if n_windows > 1 else "single 3s window"
+        windows_note = f"averaged over {n_windows} windows" if n_windows > 1 else "single 1s window"
         st.markdown(
             f"""
             <div class="result-card">
@@ -739,21 +691,18 @@ def classify_audio_bytes(file_bytes):
             unsafe_allow_html=True,
         )
 
-    # --- Confidence / bias feedback ---
-    crow_bias_flag = (top_class_name == "Crow") and (confidence < 65 or rms < 5e-3)
-    if crow_bias_flag:
+    # --- Confidence feedback ---
+    weak_signal_flag = confidence < 65 and (rms < 5e-3 or dur < 0.5)
+    if weak_signal_flag:
         st.warning(
-            "⚠️ **Crow was predicted with weak signal — this is suspicious.**  \n"
-            f"Confidence={confidence:.1f}%, input RMS={rms:.4f}. Crow is this network's "
-            "**bias class** on silence / noise / failed decodes.  \n"
-            "👉 Re-record with louder, longer sound or verify mic input; otherwise this is "
-            "almost certainly NOT a real Crow."
+            "⚠️ **Prediction made with a weak/short signal — treat with caution.**  \n"
+            f"Confidence={confidence:.1f}%, input RMS={rms:.4f}, duration={dur:.2f}s.  \n"
+            "👉 Re-record with a louder, longer (1s+) sound or verify mic input."
         )
     elif confidence < 50:
         st.warning(
             "⚠️ **Low confidence** (<50%).  \n"
-            "Try: cleaner recording, longer duration, moving the mic closer, "
-            "or switching the standardization method in the advanced settings."
+            "Try: cleaner recording, longer duration, or moving the mic closer."
         )
     elif confidence < 70:
         st.info(
@@ -766,13 +715,14 @@ def classify_audio_bytes(file_bytes):
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Log Mel-Spectrogram (Channel 0)")
+        st.subheader("YAMNet Log Mel-Spectrogram (first 1s window)")
+        # features_normed here is YAMNet's own internal log-mel, shape (frames, 64)
         fig_mel = px.imshow(
-            features_normed[0, :, :, 0],
+            features_normed.T,
             origin="lower",
             aspect="auto",
             color_continuous_scale="Viridis",
-            labels={"x": "Time frames", "y": "Mel bins", "color": "Normed dB"},
+            labels={"x": "Time frames", "y": "Mel bins", "color": "dB"},
         )
         st.plotly_chart(fig_mel, use_container_width=True)
 
@@ -906,7 +856,7 @@ with tab_mic:
                     f"🔊 Decoded signal: **{dur:.2f} s**, peak={peak:.4f}, **RMS={rms:.4f}**  \n"
                 )
                 if silent_flag:
-                    cap += "🚩 **RMS/peak ≈ 0 → SILENCE captured.** Classifier will fake-Crow. See troubleshooting above."
+                    cap += "🚩 **RMS/peak ≈ 0 → SILENCE captured.** Prediction will be unreliable. See troubleshooting above."
                     st.warning(cap)
                 elif short_flag:
                     cap += f"🚩 Only {dur:.2f} s. Re-record with at least 1–2 s of actual sound."
@@ -935,37 +885,15 @@ with st.expander("⚙️ Advanced Inference Settings", expanded=False):
         unsafe_allow_html=True,
     )
 
-    norm_options = [NORM_DEFAULT]
-    if CHANNEL_STATS_AVAILABLE:
-        norm_options.append("Per-Channel Stats (from 6-file .npy, EXPERIMENTAL)")
-    norm_options.append("Per-Sample Standardization (NOT recommended)")
-
-    st.radio(
-        "Standardization Method",
-        options=norm_options,
-        index=0,
-        key="norm_option",
-        help=(
-            "How features are normalized before feeding the TFLite model.\n\n"
-            "- Global Stats [DEFAULT, VERIFIED]: single scalar mean/std computed over\n"
-            "  all 400 training clips (mean=-25.8526, std=34.9650). Checked against\n"
-            "  80 held-out clips the model never saw — this is the safest choice.\n"
-            "- Per-Channel Stats [EXPERIMENTAL, shown only if .npy files exist]:\n"
-            "  separate stats for LogMel vs MFCC channels. Derived from only 6 files.\n"
-            "  Anecdotally better on some inputs, worse on others; use for A/B tests.\n"
-            "- Per-Sample Standardization: NEVER the training pipeline — destroys\n"
-            "  absolute magnitude info that the BatchNorm layers depend on."
-        ),
-    )
-
     st.checkbox(
         "Enable Time-Slice Voting",
         value=True,
         key="use_voting",
         help=(
-            "If audio is longer than 3s, split it into overlapping 3s windows, "
-            "classify each, and average probabilities. Improves microphone "
-            "recordings by looking at the whole clip, not just the first 3s."
+            "If audio is longer than 1s, split it into overlapping 1s windows "
+            "(matching how the training set was built), classify each, and average "
+            "probabilities. Improves microphone recordings by looking at the whole "
+            "clip instead of just the first second."
         ),
     )
     st.slider(
@@ -975,114 +903,71 @@ with st.expander("⚙️ Advanced Inference Settings", expanded=False):
         value=0.5,
         step=0.25,
         key="voting_step",
-        help="Smaller step = more windows = slower but smoother average.",
+        help="Smaller step = more windows = slower but smoother average. 0.5s matches training (50% overlap).",
     )
 
     st.divider()
     st.info(
-        "📐 Input: `[1,128,130,2]`\n\n"
-        "```\n"
-        "Model architecture (from TFLite graph):\n"
-        "  - 2 DepthwiseConv + PointwiseConv blocks\n"
-        "  - Channels: 32 -> 64\n"
-        "  - GlobalAvgPool -> Dense(96) -> Dense(10)\n"
-        "  - Held-out eval: ~60-75% top-1 (small network)\n"
-        "```"
+        "📐 Pipeline: 16kHz mono audio → 1s windows → **YAMNet** (frozen, TF-Hub) "
+        "→ mean-pooled 1024-dim embedding → **classifier_head1.tflite**\n\n"
+        f"```\n"
+        f"Classifier head:\n"
+        f"  Input:  (1024,) YAMNet embedding\n"
+        f"  Dense(256, relu) -> Dropout(0.3)\n"
+        f"  Dense(128, relu) -> Dropout(0.2)\n"
+        f"  Dense({len(ANIMAL_CLASSES)}, softmax)\n"
+        f"```"
     )
-    st.caption(f"Stats source: {STATS_FILE_SOURCE}")
-
-    with st.expander("Loaded normalization stats"):
-        st.write(
-            f"**Global (400-clip, VERIFIED)**  \n"
-            f"`mean = {GLOBAL_MEAN:.6f}`, `std = {GLOBAL_STD:.6f}`"
-        )
-        if CHANNEL_STATS_AVAILABLE:
-            cm_flat = CHANNEL_MEAN.flatten()
-            cs_flat = CHANNEL_STD.flatten()
-            st.write(
-                "**Per-Channel (6-file proxy, EXPERIMENTAL)**  \n"
-                f"  - Ch0 (LogMel):     mean={cm_flat[0]:.3f}, std={cs_flat[0]:.3f}  \n"
-                f"  - Ch1 (MFCC+Δ+ΔΔ):  mean={cm_flat[1]:.3f}, std={cs_flat[1]:.3f}  \n"
-                f"  ⚠️ These were NOT regenerated over the full 400-clip training set."
-            )
-        else:
-            st.write("**Per-Channel:** *unavailable* — no valid `feature_mean_ch.npy` / `feature_std_ch.npy` on disk.")
+    st.caption(
+        "No feature standardization is applied — YAMNet embeddings are fed to the "
+        "classifier head as-is, matching how the head was trained."
+    )
 
 with st.expander("🔬 Accuracy notes, model limits, and suggested improvements"):
     st.markdown(
         f"""
-### Normalization stats (defaults to VERIFIED global scalar)
+### How this model differs from the old spectrogram-CNN version
 
-The stats used as the app default are computed from **the full 400-clip ESC-50 animal
-training split** using the exact feature extractor from the training pipeline, and
-were verified on **80 held-out clips** the model never saw:
+This app now uses **transfer learning on YAMNet** instead of a small CNN trained from
+scratch on log-mel/MFCC spectrograms. YAMNet is a large model pretrained on ~2M YouTube
+clips (AudioSet), frozen here and used purely as a feature extractor; only the small
+dense head on top ({len(ANIMAL_CLASSES)}-way classifier) is actually trained on your
+animal-sound clips. This generally gives much better accuracy per training clip than
+training a CNN from scratch, especially with a modest dataset size.
 
-- **Global scalar [DEFAULT, VERIFIED]:**
-  `mean = {REAL_TRAINING_MEAN:.6f}`, `std = {REAL_TRAINING_STD:.6f}`
-- The old 3-file guess of `(-23.1244, 34.2621)` is gone from every code path.
-- **Per-Channel mode** (shown in the advanced settings radio only if the `.npy` files
-  exist on disk) is a 6-file proxy set, NOT regenerated over the full 400-clip training
-  run. Use it only for A/B tests, not as the default.
+### Current classes
 
-### If your results are suddenly way off after an app update
+`{', '.join(ANIMAL_CLASSES)}`
 
-Check the first radio option in the advanced settings: it should be **`Global Stats
-(400-clip training, VERIFIED default)`**. If you previously used an older version of this
-app that defaulted to an experimental Per-Channel mode, that was switched to fabricated
-fallback numbers and produced low-confidence random guesses on some machines. Flip back
-to Global (the current default) and re-classify.
+### Known limitations
 
-### Why top-1 accuracy still won't be 90%+
-
-The deployed TFLite model's actual flatbuffer compute graph is:
-
-- **Input:** `[1, 128, 130, 2]` (LogMel + stacked MFCC/Δ/ΔΔ)
-- **Backbone:** 2× (DepthwiseConv2D 3×3 → Conv2D 1×1 → BN → ReLU → MaxPool)
-  - Channels: 32 → 64
-- **Head:** GlobalAveragePool → Dense(96, ReLU) → Dense(10) → Softmax
-
-This is a **very small network** for 10-way audio classification. Held-out eval puts the
-realistic ceiling at roughly **60–75 % top-1** even with the corrected normalization —
-so some misclassifications (especially on noisy mic recordings) are baked into the
-architecture, not a bug you can fix at inference time.
-
-### Known weak class: Sheep (~25 % on held-out)
-
-From the 80-clip eval, **Sheep** is the class dragging the average down the most.
-Typical confusions are with Cat, Crow, Cow, Pig, or Insects. If Sheep matters for your
-use case, the most effective fix is:
-1. Visually compare a few Sheep mel-spectrograms vs the classes they are confused with —
-   if there's overlap in the patterns, the network simply can't tell them apart.
-2. Add targeted augmentation on the Sheep class during retraining: ±semitone pitch-shift,
-   ±10 % time-stretch, light background-noise injection, and SpecAug-style time/freq
-   masking. This usually helps much more than tweaking normalization on a fixed model.
+- **Class imbalance:** if some classes have far fewer training clips than others, expect
+  lower precision/recall on those specific classes — check the confusion matrix from your
+  training notebook to see which ones need more data.
+- **Domain mismatch:** if the training clips came from a curated dataset (e.g. ESC-50)
+  rather than real microphone recordings, live mic accuracy may be lower than the
+  notebook's held-out test accuracy. Fine-tuning with real in-domain mic clips closes
+  this gap the most.
+- **Window granularity:** predictions are made per 1-second window (matching training);
+  Time-Slice Voting averages across the whole clip, but very brief sounds shorter than
+  1s will be padded with silence, which can dilute the signal.
 
 ### Inference-time things to try (already built in!)
 
-1. **Standardization method** in the advanced settings. Keep the default **Global Stats
-   (VERIFIED)** unless you are actively A/B testing. The Per-Channel option is only 6-file
-   proxy stats and may be better or worse depending on the specific clip.
-2. **Time-Slice Voting ON** (default): on 4–5 s mic recordings, sliding 3 s windows
-   and averaging probabilities reliably gains several % because the model no longer only
-   inspects the first 3 s (which may be pre-sound silence).
-3. Always check the **Top-3** predictions, not just Top-1 — for this small network,
-   the correct class is very often rank-2 or rank-3 even when Top-1 is wrong.
+1. **Time-Slice Voting ON** (default): on longer mic recordings, sliding 1s windows with
+   50% overlap and averaging probabilities reliably improves results over classifying
+   only the first second.
+2. Always check the **Top-3** predictions, not just Top-1 — the correct class is often
+   rank-2 or rank-3 even when Top-1 is wrong, especially for visually/acoustically
+   similar animal pairs.
 
-### Pushing past ~75 %: the real fix
+### Pushing accuracy further
 
-All of the above are band-aids on a fixed under-capacity model. To go beyond:
-
-- **Retrain with a deeper backbone:** 3 separable-conv blocks (channels 64→128→128 or
-  128→256→256), GlobalAvgPool → Dense(128, ReLU, dropout) → Dense(10). This directly
-  lifts the representational ceiling before any data tuning is done.
-- **Bake a normalization layer into the exported graph** (e.g. a preprocessing
-  `Rescaling` / `Normalization` Keras layer at the input) so every deployment of the
-  `.tflite` uses the correct stats by construction — no sidebars, no `.npy` files to
-  lose.
-- If your real-world input is *microphone* recordings (not curated ESC-50 WAVs),
-  fine-tune on a pretrained audio backbone (YAMNet / PANNs / Audio Spectrogram
-  Transformer) with a few hundred in-domain mic examples — domain mismatch between
-  ESC-50-studio and laptop-mic is responsible for a bigger accuracy drop than
-  normalization noise.
+- **Add more clips for your weakest classes** (check the classification report from
+  training) rather than uniformly expanding every class.
+- **Add a `not_animal` / background-noise class** during training so the model can
+  reject non-animal sounds instead of being forced to pick its closest animal match.
+- **Re-run training with class weights** (`sklearn.utils.class_weight.compute_class_weight`)
+  if your dataset is imbalanced, so common classes don't dominate the loss.
         """
     )

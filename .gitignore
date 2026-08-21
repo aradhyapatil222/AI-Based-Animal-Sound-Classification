@@ -50,6 +50,12 @@ fix_stats.py
 import_check.py
 test_model.py
 validate_fix.py
+_chkars.py
+_do_install.py
+
+streamlit_launcher_check.txt
+streamlit_reinstall_log.txt
+streamlit_live.log.err
 
 # ===== Channel-wise stat alternatives (not used by app.py, keep global scalar pair)
 feature_mean_ch.npy

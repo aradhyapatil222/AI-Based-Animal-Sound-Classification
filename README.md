@@ -1,25 +1,27 @@
 # Real-Time Animal Voice Detection & Classifier
 
-An AI system that classifies animal sounds (10 ESC-50 animal classes) using a quantized TFLite CNN, available in two frontends:
+An AI system that classifies animal sounds (13 classes) using a **transfer-learning pipeline** — Google's **YAMNet** audio feature extractor (frozen) feeding a small trained TFLite classifier head — available in two frontends:
 
 | Frontend | Stack | Entry point |
 |----------|-------|-------------|
 | **WildEcho AI** (default, modern UI) | React + TypeScript + Vite calling a **FastAPI** backend | `server.py` + `frontend/` |
 | **Streamlit app** (classic UI) | Streamlit, self-contained | `app.py` |
 
-Both support uploading an audio file (`.wav` / `.mp3` / `.ogg`) and (Streamlit) recording directly from the microphone. Results include the predicted animal, confidence %, a log-mel spectrogram, and a per-class probability breakdown.
+Both support uploading an audio file (`.wav` / `.mp3` / `.ogg`) and (Streamlit) recording directly from the microphone. Results include the predicted animal, confidence %, YAMNet's internal log-mel spectrogram, and a per-class probability breakdown.
 
 ---
 
-## 10 Animal Classes
+## 13 Animal Classes
 
-`Dog`, `Rooster`, `Pig`, `Cow`, `Frog`, `Cat`, `Hen`, `Insects`, `Sheep`, `Crow`
+`Cat`, `Chicken`, `Cow`, `Cricket`, `Dog`, `Donkey`, `Elephant`, `Frog`, `Lion`, `Monkey`, `Pig`, `Sheep`, `Squirrel`
 
-> Realistic performance expectation on held-out data: **~60–75 % top-1** accuracy for the
-> current TFLite model. The network has a very small backbone (2 separable conv blocks,
-> 64 channels, 96 hidden units) and saturates in this range even with perfect
-> standardization and clean inputs. Noisy microphone recordings will land below the
-> upper end of that range.
+> Measured performance: **~91 % top-1 accuracy** on the held-out test split of the training notebook
+> (`classifier_head1.tflite` = dense head trained on mean-pooled YAMNet embeddings).
+> Because the heavy lifting is done by YAMNet's ImageNet-scale pretraining, this pipeline
+> generalizes far better to noisy microphone recordings than the old from-scratch spectrogram CNN (~60–75 %).
+
+> **First-run note:** YAMNet is pulled from TensorFlow Hub on startup (~15 MB, then cached).
+> An internet connection is required the first time you run `server.py` or `app.py`.
 
 ---
 
@@ -91,15 +93,16 @@ Your browser will automatically open **http://localhost:8501** — that's the ap
 2. **Microphone mode (Streamlit only):** pick a recording duration (3–5 s), click *Start Recording*, produce the sound, then classify.
 3. Click **Classify Sound** / **Classify Recorded Sound** to run inference.
 
-Expected predictions for the 3 hand-labeled samples included in the repo (these are *not* a benchmark — see the accuracy note above):
+Expected predictions for the 3 hand-labeled samples included in the repo (measured with the current pipeline, voting ON):
 
-| File | Correct label | Expected in top-3? | Notes |
-|------|---------------|--------------------|-------|
-| `1-100032-A-0.wav` | Dog | Usually Yes | Cleanest of the 3 samples |
-| `1-15689-A-4.wav` | Frog | Usually Yes | Low confidence on small model |
-| `1-77241-A-3.wav`  | Cow  | Usually Yes | High-confidence class |
+| File | Correct label | Result | Confidence | Notes |
+|------|---------------|--------|------------|-------|
+| `1-100032-A-0.wav` | Dog | ✅ Dog | ~92 % | Cleanest of the 3 samples |
+| `1-77241-A-3.wav`  | Cow  | ✅ Cow | ~87 % | High-confidence class |
+| `1-15689-A-4.wav`  | Frog | ✅ Frog | ~73 % | Croak overlaps with other nature sounds |
 
-> These 3 files are example outputs only. Real model performance was measured on **80 held-out clips** from the training split and is the source of the 60–75 % ceiling cited above.
+> These 3 files are example outputs only. Real model performance was measured on the
+> held-out test split in the training notebook (~91 % top-1).
 
 ---
 
@@ -119,13 +122,14 @@ Project 1/
 │   ├── package.json                #   npm scripts: dev / build / lint / preview
 │   └── vite.config.ts              #   Dev server + build config
 │
-├── animal_sound_model_quant_final.tflite   # PRIMARY model (small MobileNet-like CNN)
-├── animal_sound_model_quant.tflite         # FALLBACK model (kept for reference)
+├── classifier_head1.tflite           # PRIMARY model: trained dense head over YAMNet embeddings (13 classes)
+├── label_map.json                    # Class-index → animal-name mapping (must match the head's output order)
 │
-├── feature_mean.npy               # Real 400-clip training GLOBAL mean = -25.852587
-├── feature_std.npy                # Real 400-clip training GLOBAL std  =  34.965031
-├── feature_mean_ch.npy            # Per-channel (LogMel / MFCC) means from 400-clip run
-├── feature_std_ch.npy             # Per-channel (LogMel / MFCC) stds  from 400-clip run
+├── animal_sound_model_quant_final.tflite   # OLD end-to-end CNN (kept for reference, no longer used)
+├── animal_sound_model_quant.tflite         # OLD fallback model (kept for reference)
+│
+├── feature_mean.npy / feature_std.npy        # OLD pipeline stats (kept for reference)
+├── feature_mean_ch.npy / feature_std_ch.npy  # OLD per-channel stats (kept for reference)
 │
 ├── 1-100032-A-0.wav               # Sample wav: Dog   (ESC-50: 1-100032-A-0)
 ├── 1-77241-A-3.wav                # Sample wav: Cow
@@ -143,60 +147,36 @@ The backend exposes a small REST API on **http://localhost:8000**:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Model file, classes, input shape, standardization stats, server status |
+| `/api/health` | GET | Model file, classes, embedding dim, window/sample-rate config, server status |
 | `/api/samples` | GET | List of bundled sample `.wav` clips |
 | `/api/sample/{filename}` | GET | Stream a bundled sample clip (`audio/wav`) |
-| `/api/classify` | POST | Multipart: `file` + `norm_option` (form) + `use_voting` (bool) + `voting_step` (float) → prediction, top-3, per-class probabilities, spectrogram matrix, and signal stats |
+| `/api/classify` | POST | Multipart: `file` + `use_voting` (bool) + `voting_step` (float) → prediction, top-3, per-class probabilities, spectrogram matrix, and signal stats |
 
 Interactive docs are available at **http://localhost:8000/docs** (Swagger UI). CORS is wide-open so the Vite dev server can call it directly.
 
 ## How It Works 
 
-### Audio → Features (matches the training pipeline exactly)
+### Two-stage inference pipeline (mirrors the training notebook exactly)
 
-1. `librosa.load(..., sr=22050, duration=3)` — mono, 22.05 kHz, clipped/padded to 3 s.
-2. **Channel 0:** 128-bin log-mel spectrogram (`n_fft=2048, hop=512`).
-3. **Channel 1:** 20 MFCCs + delta + delta-delta → vertically padded to 128 rows.
-4. Stack → `(1, 128, 130, 2)` input tensor.
+1. **Resample** every input to 16 kHz mono with librosa.
+2. **Window:** slide a 1.0 s window across the clip (hop = 0.5 s when voting is on); windows whose RMS < 0.01 are treated as silence and skipped.
+3. **YAMNet (frozen, TF-Hub):** each 1 s window → per-frame 1024-dim embeddings → mean-pooled over frames → one 1024-dim vector per window (identical to the notebook's `extract_embedding()`).
+4. **classifier_head1.tflite:** softmax over the 13 classes for each window's embedding.
+5. **Vote:** average the per-window softmax outputs → final probabilities.
 
-### Standardization
+### Display
 
-Configurable via `norm_option` (Streamlit sidebar or API form field; defaults to *Per-Channel Stats* — recommended):
-
-| Method | Formula / source | Notes |
-|--------|------------------|-------|
-| **Per-Channel** (default) | Ch0: `-49.472 / 22.831`, Ch1: `-2.233 / 32.614` from the 400-clip training run | Best default because LogMel lives in dB and the MFCC channel is centered near 0 |
-| **Global scalar** | `(x - (-25.852587)) / 34.965031` — 400-clip training mean/std | Kept for A/B comparison with older runs |
-| Per-Sample | `(x - mean(x)) / std(x)` individually per clip | Not recommended — destroys the absolute magnitude information the BatchNorm layers were trained with |
-
-### Inference
-
-1. Load `animal_sound_model_quant_final.tflite` via TFLite Interpreter.
-2. **Optional (default ON) — Time-slice voting:** for audio clips longer than 3 s, slide a 3 s window every 0.5 s across the clip, run inference on each window, and average the returned probabilities. Improves microphone recordings substantially because the first 3 s often contain silence before the sound.
-3. Argmax over the 10 probabilities → prediction. Plot log-mel spectrogram and a 10-bar probability breakdown.
-
-### Standardization stats provenance
-
-`feature_mean.npy` / `feature_std.npy` were regenerated by running the exact
-training-pipeline feature extractor across the **full 400-clip ESC-50 animal
-training subset**, then verified against **80 held-out clips the model never saw
-during training**. Fallback values hardcoded in `app.py` are these same numbers
-(so the app behaves correctly even if `.npy` files are lost), but the files
-themselves should exist so the app is reproducible without reading source.
-
-The previous proxy values of `(-23.1244, 34.2621)` were derived from only 3
-example files and have been removed from every code path in this repo.
+- YAMNet's internal log-mel spectrogram (64 mel bins) is returned for the first window and rendered as a heatmap.
+- Per-class probability bars show all 13 classes; top-3 are highlighted.
 
 ---
 
 ## Inference-time knobs
 
-Same settings exist in the Streamlit sidebar (`app.py`) and as multipart form fields on `/api/classify` (used by the React frontend):
+Same settings exist in the Streamlit UI (`app.py`) and as multipart form fields on `/api/classify` (used by the React frontend):
 
-- **Standardization method toggle** (`norm_option`) — directly compare Global vs Per-Channel on any input.
-- **Time-Slice Voting** (`use_voting`, `voting_step`) — enable for anything ≥ 4 s.
+- **Time-Slice Voting** (`use_voting`, `voting_step`) — averages predictions across overlapping 1 s windows; strongly recommended for anything ≥ 2 s or noisy mic recordings.
 - **Top-3 predictions** are always displayed regardless of confidence, not just Top-1.
-  The correct class very often lives at rank 2–3 when Top-1 is wrong on this small model.
 
 ---
 
@@ -207,10 +187,13 @@ Same settings exist in the Streamlit sidebar (`app.py`) and as multipart form fi
 | `python` / `pip` not found | Try `python3` / `pip3`, or re-run the installer and check *Add Python to PATH* |
 | `ModuleNotFoundError: No module named ...` | Re-activate venv, then `pip install -r requirements.txt` |
 | `OSError: sndfile library not found` (Linux/Mac) | Linux: `sudo apt-get install libsndfile1`. macOS: `brew install libsndfile`. (Windows ships `soundfile` binaries fine.) |
-| Microphone widget is greyed out / not appearing | Make sure `streamlit-mic-recorder` is in your installed env (`pip show streamlit-mic-recorder`). Chrome / Edge give more reliable mic permissions than Firefox in practice. |
+| Microphone widget is greyed out / not appearing | The mic tab uses Streamlit's built-in `st.audio_input` widget (Chrome / Edge give more reliable mic permissions than Firefox in practice). |
 | Browser blocks microphone access (`getUserMedia` errors) | Streamlit must be served over **HTTPS** or **localhost** for mic permissions to work. On a remote server, use `--server.address 0.0.0.0` with an HTTPS reverse proxy, or `ssh -L 8501:localhost:8501` tunneling. |
 | Port 8501 already in use | `streamlit run app.py --server.port 8502` |
-| Slow first load of `load_tflite_model()` | Normal — TFLite interpreter + TensorFlow first-load init caches after first run. |
+| First request after startup is slow | Normal — TF init + YAMNet load + TFLite interpreter warm-up caches after first run. |
+| `hub.load` fails / first run needs internet | YAMNet downloads from TensorFlow Hub on first launch (~15 MB) and is cached afterwards. Re-run once online; subsequent runs work offline. |
+| `ModuleNotFoundError: tensorflow_hub` or `pkg_resources` | `pip install -r requirements.txt` (includes `tensorflow-hub` and `setuptools<81`, which still ships `pkg_resources`). |
+| `RuntimeError: classifier_head1.tflite outputs N classes but ANIMAL_CLASSES has M entries` | `label_map.json` doesn't match the converted model. Re-export both from the training notebook together. |
 | Frontend shows "Backend server offline" | Start the API first: `python server.py`, then reload **http://localhost:5173**. |
 | React app doesn't reach the API | Confirm the server runs on **port 8000** and that `API_BASE` in `frontend/src/App.tsx` matches (default `http://127.0.0.1:8000`). |
 | `ModuleNotFoundError: fastapi / uvicorn` | `pip install -r requirements.txt` (now includes both). |
@@ -225,4 +208,4 @@ If you created the repo, you don't need to do anything else — `.gitignore` alr
 - `venv/`
 - `__pycache__/`
 - All `*.log`, `*.tmp`, and one-shot diagnostic scripts (`diagnostic.py`, `test_model.py`, `validate_fix.py`, etc.)
-- Sample WAVs, the two `.tflite` model files, and all four `.npy` stats files **ARE included** — they are essential for a clone-and-run experience. If you want a smaller repo, remove the 6 `.wav` samples before pushing; they're ~260 KB total.
+- Sample WAVs, `classifier_head1.tflite`, `label_map.json`, the two legacy `.tflite` models, and the four `.npy` stats files **ARE included** — they are essential for a clone-and-run experience. If you want a smaller repo, remove the 6 `.wav` samples (~260 KB) and/or the 2 legacy `.tflite` + 4 `.npy` files before pushing.
