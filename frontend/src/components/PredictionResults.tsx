@@ -16,8 +16,8 @@ export const PredictionResults: React.FC<PredictionResultsProps> = ({ result, is
           <Zap className="w-7 h-7 text-electric-cyan animate-bounce" />
         </div>
         <div>
-          <h3 className="text-base font-bold text-white">Extracting Audio Features & Running TFLite Inference</h3>
-          <p className="text-xs text-slate-400 font-mono mt-1">Computing Log-Mel Spectrogram & MFCC stacked feature tensor...</p>
+          <h3 className="text-base font-bold text-white">Running YAMNet Embedding + TFLite Inference</h3>
+          <p className="text-xs text-slate-400 font-mono mt-1">Extracting 1024-dim embeddings across sliding 1 s windows...</p>
         </div>
       </div>
     );
@@ -157,14 +157,16 @@ export const PredictionResults: React.FC<PredictionResultsProps> = ({ result, is
           </div>
         </div>
 
-        {/* Full 10-Class Interactive Bar Distribution */}
+        {/* Full Per-Class Interactive Bar Distribution */}
         <div className="glass-card p-5 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-3">
             <h4 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
-              <BarChart2 className="w-4 h-4 text-electric-indigo" />
-              Complete 10-Class Softmax Array
+              <BarChart2 className="w-4 h-4 text-electric-indigo shrink-0" />
+              Full Softmax Distribution
             </h4>
-            <span className="text-[10px] font-mono text-slate-500">10 ESC-50 Classes</span>
+            <span className="text-[10px] font-mono text-slate-500 shrink-0">
+              {result.predictions.length} Classes
+            </span>
           </div>
 
           <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">

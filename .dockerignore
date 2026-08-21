@@ -1,0 +1,43 @@
+# Keep the Docker build context small and reproducible.
+# The frontend is compiled inside the image, so local build output and
+# installed modules must never be copied in.
+
+# --- Node / frontend ---
+frontend/node_modules
+frontend/dist
+frontend/.oxlintrc.json
+
+# --- Python ---
+venv/
+env/
+ENV/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Streamlit app is not part of the Space image ---
+app.py
+
+# --- Legacy / unused model artifacts ---
+animal_sound_model_quant.tflite
+animal_sound_model_quant_final.tflite
+feature_mean.npy
+feature_std.npy
+feature_mean_ch.npy
+feature_std_ch.npy
+
+# --- Local noise ---
+.git
+.gitignore
+*.log
+*.tmp
+*.txt
+!requirements-deploy.txt
+_chkars.py
+_do_install.py
+hello.txt
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

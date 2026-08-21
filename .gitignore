@@ -38,6 +38,9 @@ Thumbs.db
 # ===== Streamlit / runtime =====
 .streamlit/secrets.toml
 
+# ===== Caches =====
+.cache/
+
 # ===== Project temp & diagnostic files =====
 *.log
 *.tmp

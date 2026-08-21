@@ -1,0 +1,17 @@
+# Minimal dependency set for the Hugging Face Space (Docker) deployment.
+# This runs ONLY the FastAPI backend (server.py) + the prebuilt React frontend,
+# so Streamlit and Plotly are intentionally excluded to keep the image small
+# and the Space build fast. For local development (including app.py, the
+# Streamlit UI), use requirements.txt instead.
+
+fastapi==0.121.0
+uvicorn==0.38.0
+python-multipart==0.0.32   # required by FastAPI for multipart/form-data uploads
+
+numpy==2.4.6
+tensorflow==2.21.0
+tensorflow-hub==0.16.1
+setuptools<81               # still ships pkg_resources, needed by tensorflow-hub
+
+librosa==0.11.0
+soundfile==0.14.0

@@ -81,8 +81,7 @@ export const SpectrogramViewer: React.FC<SpectrogramViewerProps> = ({ spectrogra
     if (frame >= 0 && frame < spectrogram.num_frames && mel >= 0 && mel < spectrogram.num_mels) {
       const val = spectrogram.matrix[mel][frame] || 0;
       const db = spectrogram.min_db + (val / 255) * (spectrogram.max_db - spectrogram.min_db);
-      // Rough mel to hz approximation
-      const freqHz = Math.round(700 * (Math.pow(10, (mel / 128) * (2595 / 700)) - 1));
+      const freqHz = Math.round(melBandToHz(mel, spectrogram.num_mels));
 
       setHoverInfo({
         frame,
@@ -97,6 +96,24 @@ export const SpectrogramViewer: React.FC<SpectrogramViewerProps> = ({ spectrogra
     return Math.round(num * Math.pow(10, decimals)) / Math.pow(10, decimals);
   };
 
+  // YAMNet's log-mel front end uses 64 mel bands spaced evenly on the mel scale
+  // between 125 Hz and 7500 Hz. Convert a band index back to its centre
+  // frequency so the hover readout and axis labels reflect the real model input.
+  const YAMNET_MEL_MIN_HZ = 125;
+  const YAMNET_MEL_MAX_HZ = 7500;
+  const hzToMel = (hz: number) => 2595 * Math.log10(1 + hz / 700);
+  const melToHz = (mel: number) => 700 * (Math.pow(10, mel / 2595) - 1);
+
+  const melBandToHz = (band: number, numBands: number) => {
+    const lo = hzToMel(YAMNET_MEL_MIN_HZ);
+    const hi = hzToMel(YAMNET_MEL_MAX_HZ);
+    const frac = numBands > 1 ? band / (numBands - 1) : 0;
+    return melToHz(lo + frac * (hi - lo));
+  };
+
+  const formatHz = (hz: number) =>
+    hz >= 1000 ? `${(hz / 1000).toFixed(1)} kHz` : `${Math.round(hz)} Hz`;
+
   if (!spectrogram) {
     return null;
   }
@@ -105,21 +122,21 @@ export const SpectrogramViewer: React.FC<SpectrogramViewerProps> = ({ spectrogra
     <div className="glass-card p-5 space-y-4">
       
       {/* Header & Colormap selector */}
-      <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div className="min-w-0">
           <h4 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
-            <Activity className="w-4 h-4 text-electric-cyan" />
-            Channel 0: Log-Mel Spectrogram Visualization
+            <Activity className="w-4 h-4 text-electric-cyan shrink-0" />
+            Log-Mel Spectrogram (YAMNet Input)
           </h4>
           <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-            128 Mel Bins × 130 Time Frames (n_fft=2048, hop=512, sr=22050Hz)
+            {spectrogram.num_mels} Mel Bins × {spectrogram.num_frames} Frames • First 1.0 s window @ 16 kHz
           </p>
         </div>
 
         {/* Colormap Buttons */}
-        <div className="flex items-center gap-1.5 p-1 rounded-lg bg-obsidian-950/80 border border-slate-800">
+        <div className="flex items-center gap-1.5 p-1 rounded-lg bg-obsidian-950/80 border border-slate-800 self-start sm:self-auto shrink-0">
           {[
-            { id: 'cyan', label: 'Electric Obsidian' },
+            { id: 'cyan', label: 'Obsidian' },
             { id: 'viridis', label: 'Viridis' },
             { id: 'plasma', label: 'Plasma' },
           ].map((item) => (
@@ -141,12 +158,13 @@ export const SpectrogramViewer: React.FC<SpectrogramViewerProps> = ({ spectrogra
       {/* Spectrogram Canvas with Axes */}
       <div className="relative flex">
         
-        {/* Y-Axis Labels (Frequency) */}
-        <div className="flex flex-col justify-between pr-2 py-1 text-[9px] font-mono text-slate-500 select-none text-right w-14">
-          <span>11.0 kHz</span>
-          <span>5.5 kHz</span>
-          <span>2.7 kHz</span>
-          <span>0 Hz</span>
+        {/* Y-Axis Labels (Frequency), derived from YAMNet's actual mel range */}
+        <div className="flex flex-col justify-between pr-2 py-1 text-[9px] font-mono text-slate-500 select-none text-right w-12 sm:w-14 shrink-0">
+          {[1, 0.66, 0.33, 0].map((frac) => (
+            <span key={frac}>
+              {formatHz(melBandToHz(frac * (spectrogram.num_mels - 1), spectrogram.num_mels))}
+            </span>
+          ))}
         </div>
 
         {/* Canvas Wrapper */}
@@ -172,13 +190,13 @@ export const SpectrogramViewer: React.FC<SpectrogramViewerProps> = ({ spectrogra
 
       </div>
 
-      {/* X-Axis Labels (Time) */}
-      <div className="flex justify-between pl-16 pr-1 text-[9px] font-mono text-slate-500 select-none">
+      {/* X-Axis Labels (Time) — the displayed window is 1.0 s of 16 kHz mono */}
+      <div className="flex justify-between pl-12 sm:pl-14 pr-1 text-[9px] font-mono text-slate-500 select-none">
         <span>0.0s</span>
+        <span>0.25s</span>
+        <span>0.50s</span>
         <span>0.75s</span>
-        <span>1.50s</span>
-        <span>2.25s</span>
-        <span>3.00s</span>
+        <span>1.0s</span>
       </div>
 
     </div>

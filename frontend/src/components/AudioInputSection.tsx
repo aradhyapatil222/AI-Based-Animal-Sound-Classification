@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Mic, Play, Pause, Square, Settings, SlidersHorizontal, Volume2, VolumeX, Sparkles, FileAudio } from 'lucide-react';
 
 interface AudioInputSectionProps {
-  onClassifyFile: (file: File | Blob, options: { normOption: string; useVoting: boolean; votingStep: number }) => void;
+  onClassifyFile: (file: File | Blob, options: { useVoting: boolean; votingStep: number }) => void;
   isLoading: boolean;
 }
 
@@ -87,7 +87,6 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
 
   // Advanced settings state
   const [showSettings, setShowSettings] = useState(false);
-  const [normOption, setNormOption] = useState<string>('Global Stats');
   const [useVoting, setUseVoting] = useState<boolean>(true);
   const [votingStep, setVotingStep] = useState<number>(0.5);
 
@@ -304,7 +303,6 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
   }, []);
 
   const getOptions = () => ({
-    normOption,
     useVoting,
     votingStep,
   });
@@ -360,51 +358,15 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
       {/* Collapsible Advanced Settings Drawer */}
       {showSettings && (
         <div className="mt-4 p-4 rounded-xl bg-obsidian-950/90 border border-slate-800 animate-fade-in space-y-4">
-          <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-300">
             <span className="flex items-center gap-1.5">
-              <Settings className="w-3.5 h-3.5 text-electric-cyan" />
-              Inference & Standardization Parameters
+              <Settings className="w-3.5 h-3.5 text-electric-cyan shrink-0" />
+              Inference Parameters
             </span>
-            <span className="text-[10px] font-mono text-slate-500">TFLite Runtime Config</span>
+            <span className="text-[10px] font-mono text-slate-500 shrink-0 hidden sm:inline">TFLite Runtime Config</span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            
-            {/* Normalization Strategy */}
-            <div>
-              <label className="text-micro-label block mb-1.5 text-slate-400">
-                Standardization Method
-              </label>
-              <div className="space-y-1.5">
-                {[
-                  { id: 'Global Stats', label: 'Global Stats (400-clip ESC-50 verified)' },
-                  { id: 'Per-Channel Stats', label: 'Per-Channel Stats (LogMel/MFCC split)' },
-                  { id: 'Per-Sample Stats', label: 'Per-Sample Stats (Clip mean/std)' },
-                ].map((opt) => (
-                  <label
-                    key={opt.id}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer transition-all ${
-                      normOption === opt.id
-                        ? 'bg-electric-indigo/15 border-electric-indigo/50 text-white'
-                        : 'bg-obsidian-850/50 border-slate-800 text-slate-400 hover:border-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="norm_option"
-                      value={opt.id}
-                      checked={normOption === opt.id}
-                      onChange={() => setNormOption(opt.id)}
-                      className="hidden"
-                    />
-                    <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${normOption === opt.id ? 'border-electric-indigo bg-electric-indigo' : 'border-slate-600'}`}>
-                      {normOption === opt.id && <span className="w-1.5 h-1.5 bg-white rounded-full" />}
-                    </span>
-                    <span>{opt.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
+          <div className="pt-2">
 
             {/* Time-Slice Voting */}
             <div>
@@ -412,13 +374,13 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
                 Time-Slice Sliding Window Voting
               </label>
               <div className="space-y-3">
-                <label className="flex items-center justify-between px-3 py-2 rounded-lg bg-obsidian-850/50 border border-slate-800 text-xs cursor-pointer">
+                <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-obsidian-850/50 border border-slate-800 text-xs cursor-pointer">
                   <span className="text-slate-300 font-medium">Enable Multi-Window Voting</span>
                   <input
                     type="checkbox"
                     checked={useVoting}
                     onChange={(e) => setUseVoting(e.target.checked)}
-                    className="rounded border-slate-700 bg-obsidian-900 text-electric-indigo focus:ring-electric-indigo"
+                    className="rounded border-slate-700 bg-obsidian-900 text-electric-indigo focus:ring-electric-indigo shrink-0"
                   />
                 </label>
 
@@ -437,6 +399,10 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
                       onChange={(e) => setVotingStep(parseFloat(e.target.value))}
                       className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-electric-cyan"
                     />
+                    <p className="text-[10px] text-slate-500 leading-snug pt-0.5">
+                      Averages predictions over overlapping 1 s windows. Recommended for clips
+                      longer than 2 s and for noisy microphone recordings.
+                    </p>
                   </div>
                 )}
               </div>

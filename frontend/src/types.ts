@@ -44,12 +44,15 @@ export interface SampleAudioItem {
   size_bytes?: number;
 }
 
+// Mirrors the JSON returned by GET /api/health in server.py.
 export interface HealthStatus {
   status: string;
   model_file: string;
+  classifier_head: string;
+  feature_extractor: string;
   classes: string[];
   input_shape: number[];
-  channel_stats_available: boolean;
-  global_mean: number;
-  global_std: number;
+  embedding_dim: number;
+  window_duration_s: number;
+  sample_rate: number;
 }

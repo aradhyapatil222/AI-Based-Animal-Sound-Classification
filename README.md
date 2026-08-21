@@ -1,3 +1,18 @@
+---
+title: WildEcho AI — Animal Sound Classifier
+emoji: 🐾
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+short_description: Identify 13 animals from audio using YAMNet + a TFLite head
+---
+
+<!-- The YAML block above configures the Hugging Face Space. It is required by
+     Hugging Face and is ignored when this file is viewed as a normal README. -->
+
 # Real-Time Animal Voice Detection & Classifier
 
 An AI system that classifies animal sounds (13 classes) using a **transfer-learning pipeline** — Google's **YAMNet** audio feature extractor (frozen) feeding a small trained TFLite classifier head — available in two frontends:
@@ -106,14 +121,104 @@ Expected predictions for the 3 hand-labeled samples included in the repo (measur
 
 ---
 
+## Deploying free on Hugging Face Spaces
+
+The repo ships a `Dockerfile` that builds the React frontend and serves it from
+the FastAPI backend as **one container on port 7860**, which is exactly what a
+Hugging Face **Docker Space** expects. The free *CPU Basic* tier (2 vCPU, 16 GB
+RAM) is enough to run TensorFlow + YAMNet.
+
+### 1. Create the Space
+
+1. Sign in at [huggingface.co](https://huggingface.co) (free account).
+2. Go to **New → Space**.
+3. Fill in:
+   - **Space name:** e.g. `wildecho-ai`
+   - **SDK:** **Docker** → *Blank*
+   - **Hardware:** *CPU basic (free)*
+   - **Visibility:** Public
+4. Click **Create Space**. Leave the page open — it shows the git URL you need next.
+
+### 2. Push this project to the Space
+
+Hugging Face Spaces are git repos. From the project folder:
+
+```bash
+git remote add space https://huggingface.co/spaces/<YOUR_USERNAME>/wildecho-ai
+```
+
+```bash
+git push space main
+```
+
+When prompted for a password, use a **User Access Token** with *write* scope
+(create one at *Settings → Access Tokens*) — your account password will not work.
+
+> Already have a `main` branch mismatch? Use `git push space HEAD:main`.
+
+### 3. Wait for the first build
+
+The Space will show **Building**. The first build takes roughly **10–20 minutes**
+because it installs TensorFlow and bakes YAMNet into the image. Watch progress
+under the **Logs** tab. When it flips to **Running**, open the Space URL:
+
+```
+https://<YOUR_USERNAME>-wildecho-ai.hf.space
+```
+
+Subsequent pushes rebuild much faster thanks to Docker layer caching.
+
+### What the deployed container does
+
+| Path | Serves |
+|------|--------|
+| `/` | The compiled React UI (from `frontend/dist`, built inside the image) |
+| `/api/*` | The FastAPI endpoints described above |
+| `/docs` | Swagger UI |
+
+Because the UI and API share one origin, the frontend calls the API with
+**relative URLs** — no CORS configuration and no second service to deploy.
+
+### Microphone on the deployed Space
+
+`getUserMedia` requires a secure context. Spaces are served over HTTPS, so live
+mic recording works. One caveat: on the `huggingface.co/spaces/...` **page** the
+app runs inside an iframe, and some browsers block mic access there. If the mic
+is refused, open the **direct** URL (`https://<user>-<space>.hf.space`) instead.
+
+### Deployment safety limits
+
+`server.py` enforces two limits so a single request cannot exhaust the free
+shared instance:
+
+- **`MAX_UPLOAD_BYTES`** — uploads over 20 MB are rejected with HTTP 413.
+- **`MAX_VOTING_WINDOWS`** — at most 60 windows are analyzed per request; longer
+  clips are sampled evenly end-to-end rather than truncated.
+
+### Notes & alternatives
+
+- **Free-tier sleeping:** free Spaces pause after a period of inactivity and
+  cold-start on the next visit (the first request after waking is slower).
+- **Why not Vercel/Netlify?** Their serverless functions cap deployment bundles
+  at ~250 MB; TensorFlow alone exceeds that, so the Python backend cannot run
+  there. They remain fine for hosting *only* the frontend — set
+  `VITE_API_BASE` to your API URL at build time if you split the two.
+- **Render free tier** (512 MB RAM) is not enough for TensorFlow; it will OOM.
+
+---
+
 ## Project Layout 
 
 ```
 Project 1/
+├── Dockerfile                      # Builds frontend + backend into one image (HF Spaces)
+├── .dockerignore                   # Keeps the build context small
+├── requirements-deploy.txt         # Slim deps for the deployed container (no Streamlit)
+│
 ├── app.py                          # Main Streamlit web app  <-- classic entry point
-├── server.py                       # FastAPI backend (WildEcho AI API, port 8000)  <-- API entry point
-├── requirements.txt                # Exact pinned dependency versions
-├── README.md                       # This file
+├── server.py                       # FastAPI backend + static frontend host  <-- API entry point
+├── requirements.txt                # Full pinned dependency versions (local dev, both UIs)
+├── README.md                       # This file (its YAML header configures the Space)
 ├── .gitignore                      # Ignores venv/, logs, cache, temp scripts
 │
 ├── frontend/                       # React + TypeScript + Vite UI (WildEcho AI)

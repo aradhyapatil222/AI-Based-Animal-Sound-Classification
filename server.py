@@ -11,6 +11,18 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
 
+# Resolve paths relative to this file so the app works no matter what the
+# current working directory is (Docker/HF Spaces start it from elsewhere).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Cache TF-Hub downloads somewhere writable. On Hugging Face Spaces the image
+# bakes YAMNet into this directory at build time; locally it is created on
+# first run. Without this, TF-Hub falls back to a temp dir and re-downloads.
+os.environ.setdefault(
+    'TFHUB_CACHE_DIR',
+    os.path.join(os.path.expanduser("~"), '.cache', 'tfhub')
+)
+
 # --- Numba stub for librosa compatibility ---
 def _numba_identity(func):
     return func
@@ -67,6 +79,7 @@ import librosa
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import tensorflow as tf
 import tensorflow_hub as hub
 
@@ -85,8 +98,8 @@ import tensorflow_hub as hub
 # model's predictions will be meaningless.
 # ============================================================
 
-LABEL_MAP_PATH = "label_map.json"
-CLASSIFIER_HEAD_PATH = "classifier_head1.tflite"
+LABEL_MAP_PATH = os.path.join(BASE_DIR, "label_map.json")
+CLASSIFIER_HEAD_PATH = os.path.join(BASE_DIR, "classifier_head1.tflite")
 
 if not os.path.exists(CLASSIFIER_HEAD_PATH):
     raise RuntimeError(
@@ -138,6 +151,12 @@ SR = 16000
 WINDOW_DURATION = 1.0
 WINDOW_SAMPLES = int(SR * WINDOW_DURATION)
 SILENCE_RMS_THRESHOLD = 0.01
+
+# Public-deployment safety limits. The Space is a shared free CPU instance, so
+# an oversized upload or a very long clip must not be able to pin it: each
+# voting window is a separate YAMNet forward pass.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024   # 20 MB
+MAX_VOTING_WINDOWS = 60               # ~30 s of audio at the default 0.5 s hop
 
 print("Loading YAMNet from TensorFlow Hub (first run downloads ~15MB, then cached)...")
 yamnet_model = hub.load("https://tfhub.dev/google/yamnet/1")
@@ -240,9 +259,9 @@ def _classify_embedding(embedding: np.ndarray):
 def health_check():
     return {
         "status": "online",
-        "model_file": CLASSIFIER_HEAD_PATH,
+        "model_file": os.path.basename(CLASSIFIER_HEAD_PATH),
         "input_shape": [1, 1024],
-        "classifier_head": CLASSIFIER_HEAD_PATH,
+        "classifier_head": os.path.basename(CLASSIFIER_HEAD_PATH),
         "feature_extractor": "YAMNet (tfhub.dev/google/yamnet/1)",
         "classes": ANIMAL_CLASSES,
         "embedding_dim": 1024,
@@ -263,15 +282,23 @@ SAMPLE_FILES = [
 def get_sample_list():
     existing = []
     for item in SAMPLE_FILES:
-        path = os.path.join(".", item["filename"])
+        path = os.path.join(BASE_DIR, item["filename"])
         if os.path.exists(path):
             existing.append({**item, "size_bytes": os.path.getsize(path)})
     return existing
 
+# Only filenames from SAMPLE_FILES may be streamed. Serving an arbitrary
+# user-supplied path here would let a caller read files outside BASE_DIR
+# (e.g. "../../etc/passwd"), so we match against a fixed allow-list.
+_ALLOWED_SAMPLES = {item["filename"] for item in SAMPLE_FILES}
+
+
 @app.get("/api/sample/{filename}")
 def stream_sample_audio(filename: str):
-    path = os.path.join(".", filename)
-    if not os.path.exists(path) or not filename.endswith(".wav"):
+    if filename not in _ALLOWED_SAMPLES:
+        raise HTTPException(status_code=404, detail="Sample audio file not found.")
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Sample audio file not found.")
     return FileResponse(path, media_type="audio/wav")
 
@@ -291,6 +318,12 @@ async def classify_audio(
         raw_bytes = await file.read()
         if not raw_bytes or len(raw_bytes) < 44:
             raise HTTPException(status_code=400, detail="Invalid audio file (file empty or corrupt header).")
+        if len(raw_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio file is too large ({len(raw_bytes) / 1_048_576:.1f} MB). "
+                       f"Maximum is {MAX_UPLOAD_BYTES // 1_048_576} MB — please upload a short clip (3–5 s is ideal)."
+            )
 
         y_full, sr = _load_audio_bytes(raw_bytes, sr=SR)
         dur = float(len(y_full) / sr)
@@ -328,6 +361,13 @@ async def classify_audio(
                 t += voting_step
             if not offsets:
                 offsets = [0.0]
+
+            # Cap the work per request: sample evenly across the whole clip
+            # instead of truncating, so long uploads are still classified using
+            # audio from beginning to end.
+            if len(offsets) > MAX_VOTING_WINDOWS:
+                stride = len(offsets) / MAX_VOTING_WINDOWS
+                offsets = [offsets[int(i * stride)] for i in range(MAX_VOTING_WINDOWS)]
 
             votes = []
             for i, t0 in enumerate(offsets):
@@ -395,6 +435,36 @@ async def classify_audio(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
 
+# ============================================================
+# Static frontend
+#
+# In the deployed (Docker / Hugging Face Spaces) image the compiled React app
+# lives in frontend/dist and is served from this same process, so the UI and the
+# API share one origin and one URL — no CORS hop, no second service.
+#
+# This mount is declared LAST on purpose: it is a catch-all for "/", so any
+# route registered after it would be shadowed. During local development the
+# directory simply does not exist and the API runs on its own while Vite serves
+# the UI on port 5173.
+# ============================================================
+
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+
+if os.path.isdir(FRONTEND_DIST):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    print(f"Serving compiled frontend from {FRONTEND_DIST}")
+else:
+    print(
+        "No compiled frontend found at frontend/dist — running in API-only mode.\n"
+        "For local development start the Vite dev server separately "
+        "(cd frontend && npm run dev)."
+    )
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    # Hugging Face Spaces routes external traffic to $PORT (7860 for Docker
+    # spaces) and requires binding 0.0.0.0; both default sensibly for local runs.
+    port = int(os.environ.get("PORT", 8000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)

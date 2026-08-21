@@ -60,7 +60,7 @@ export const SignalTelemetryCard: React.FC<SignalTelemetryCardProps> = ({ stats,
             {stats.num_windows_voted} {stats.num_windows_voted === 1 ? 'Win' : 'Wins'}
           </div>
           <div className="text-[9px] font-mono text-slate-500">
-            3.0s Sliding Window
+            1.0s Sliding Window
           </div>
         </div>
 

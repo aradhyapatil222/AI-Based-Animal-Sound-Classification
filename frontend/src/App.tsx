@@ -9,7 +9,13 @@ import { ModelSpecsModal } from './components/ModelSpecsModal';
 import type { ClassifyResponse, HealthStatus } from './types';
 import { AlertCircle } from 'lucide-react';
 
-const API_BASE = 'http://127.0.0.1:8000';
+// In production the FastAPI backend serves this compiled bundle itself, so the
+// API lives on the same origin and a relative path is correct. In dev, Vite
+// serves the UI on :5173 while the API runs on :8000, so we point at it
+// explicitly. Override with VITE_API_BASE if you host the two separately.
+const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '');
 
 export function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -37,14 +43,13 @@ export function App() {
 
   const handleClassifyFile = async (
     fileOrBlob: File | Blob,
-    options: { normOption: string; useVoting: boolean; votingStep: number }
+    options: { useVoting: boolean; votingStep: number }
   ) => {
     setIsLoading(true);
     setErrorMsg(null);
 
     const formData = new FormData();
     formData.append('file', fileOrBlob, 'audio.wav');
-    formData.append('norm_option', options.normOption);
     formData.append('use_voting', String(options.useVoting));
     formData.append('voting_step', String(options.votingStep));
 
@@ -125,12 +130,12 @@ export function App() {
 
       {/* Minimal Footer */}
       <footer className="w-full border-t border-slate-800/60 py-6 mt-8 bg-obsidian-950/60">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 font-mono">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left text-xs text-slate-500 font-mono">
           <div>
-            WildEcho AI Edge Neural Classifier • TFLite Quantized Engine
+            WildEcho AI • YAMNet Embeddings + TFLite Classifier Head
           </div>
           <div>
-            10 ESC-50 Species Benchmark • 22.05 kHz Audio Feature Matrix
+            {health?.classes?.length ?? 13} Animal Classes • 16 kHz Mono • 1 s Windows
           </div>
         </div>
       </footer>
