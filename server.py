@@ -4,6 +4,7 @@ import types
 import warnings
 import time
 import io
+import wave
 from typing import Optional, List
 
 # Suppress TF logs & warnings
@@ -80,8 +81,21 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 import tensorflow as tf
 import tensorflow_hub as hub
+
+# Microphone capture for /api/live-mic/classify. This is only available on the
+# Raspberry Pi where sounddevice + a USB mic are present; on Hugging Face Spaces
+# or other backends it is imported lazily so the rest of the server still runs.
+try:
+    import sounddevice as sd
+    from scipy.signal import resample_poly
+    _MIC_AVAILABLE = True
+except Exception:  # pragma: no cover - sounddevice absent on non-Pi hosts
+    sd = None
+    resample_poly = None
+    _MIC_AVAILABLE = False
 
 # ============================================================
 # Model / class configuration
@@ -151,6 +165,13 @@ SR = 16000
 WINDOW_DURATION = 1.0
 WINDOW_SAMPLES = int(SR * WINDOW_DURATION)
 SILENCE_RMS_THRESHOLD = 0.01
+
+# Raspberry Pi physical microphone configuration
+PI_MIC_DEVICE = 1
+PI_CAPTURE_SR = 44100
+PI_CAPTURE_CHANNELS = 2
+PI_MIC_CLIP_SECONDS = 3.0
+PI_MIC_SILENCE_RMS = 0.01
 
 # Public-deployment safety limits. The Space is a shared free CPU instance, so
 # an oversized upload or a very long clip must not be able to pin it: each
@@ -301,6 +322,138 @@ def stream_sample_audio(filename: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Sample audio file not found.")
     return FileResponse(path, media_type="audio/wav")
+
+def record_raspberry_pi_mic(
+    duration: float = PI_MIC_CLIP_SECONDS,
+    device: int = PI_MIC_DEVICE,
+):
+    """
+    Record from the UM1002 connected directly to the Raspberry Pi.
+
+    UM1002 native capture:
+        44.1 kHz stereo int16
+
+    Model input:
+        16 kHz mono int16
+    """
+
+    if not _MIC_AVAILABLE:
+        raise RuntimeError(
+            "sounddevice is not installed on this host. "
+            "This endpoint only works on the Raspberry Pi with a USB microphone "
+            "(pip install sounddevice scipy)."
+        )
+
+    audio = sd.rec(
+        int(duration * PI_CAPTURE_SR),
+        samplerate=PI_CAPTURE_SR,
+        channels=PI_CAPTURE_CHANNELS,
+        dtype="int16",
+        device=device,
+    )
+
+    sd.wait()
+
+    # Stereo -> mono
+    audio = audio.astype(np.float32)
+    audio = np.mean(audio, axis=1)
+
+    # Normalize
+    audio /= 32768.0
+
+    # Silence detection BEFORE resampling
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+
+    if rms < PI_MIC_SILENCE_RMS:
+        return None, rms
+
+    # 44.1 kHz -> 16 kHz
+    audio = resample_poly(
+        audio,
+        SR,
+        PI_CAPTURE_SR,
+    )
+
+    # Back to int16 WAV samples
+    audio = np.clip(
+        audio * 32768.0,
+        -32768,
+        32767,
+    ).astype(np.int16)
+
+    return audio, rms
+
+
+def samples_to_wav_bytes(samples: np.ndarray, sample_rate: int = SR):
+    """Convert mono int16 samples to an in-memory WAV file."""
+
+    buffer = io.BytesIO()
+
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(samples.tobytes())
+
+    buffer.seek(0)
+
+    return buffer
+
+
+@app.post("/api/live-mic/classify")
+async def classify_raspberry_pi_mic(
+    use_voting: bool = Form(True),
+    voting_step: float = Form(0.5),
+):
+    """
+    Record directly from the microphone attached to the Raspberry Pi,
+    then run the existing animal classifier.
+    """
+
+    try:
+        # Recording is blocking, so run it outside the FastAPI event loop.
+        samples, rms = await run_in_threadpool(
+            record_raspberry_pi_mic,
+            PI_MIC_CLIP_SECONDS,
+            PI_MIC_DEVICE,
+        )
+
+        # No meaningful sound
+        if samples is None:
+            return {
+                "success": True,
+                "silent": True,
+                "message": "No significant sound detected.",
+                "rms_power": round(rms, 6),
+            }
+
+        wav_buffer = samples_to_wav_bytes(
+            samples,
+            SR,
+        )
+
+        # Reuse the EXACT same classifier endpoint logic.
+        upload = UploadFile(
+            file=wav_buffer,
+            filename="raspberry_pi_live.wav",
+        )
+
+        result = await classify_audio(
+            file=upload,
+            use_voting=use_voting,
+            voting_step=voting_step,
+        )
+
+        result["source"] = "raspberry_pi_um1002"
+
+        return result
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Raspberry Pi microphone error: {str(e)}",
+        )
+
 
 @app.post("/api/classify")
 async def classify_audio(

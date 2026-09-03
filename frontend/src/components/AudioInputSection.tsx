@@ -1,61 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Mic, Play, Pause, Square, Settings, SlidersHorizontal, Volume2, VolumeX, Sparkles, FileAudio } from 'lucide-react';
+import { Upload, Mic, Play, Pause, Settings, SlidersHorizontal, Volume2, VolumeX, Sparkles, FileAudio } from 'lucide-react';
 
 interface AudioInputSectionProps {
   onClassifyFile: (file: File | Blob, options: { useVoting: boolean; votingStep: number }) => void;
+  onRaspberryPiMic: () => Promise<void>;
   isLoading: boolean;
-}
-
-// 16-bit PCM WAV Encoder in Pure JavaScript
-function encodeWAV(samples: Float32Array, sampleRate: number): Blob {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-
-  const writeString = (offset: number, string: string) => {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
-  };
-
-  /* RIFF identifier */
-  writeString(0, 'RIFF');
-  /* RIFF chunk length */
-  view.setUint32(4, 36 + samples.length * 2, true);
-  /* RIFF type */
-  writeString(8, 'WAVE');
-  /* format chunk identifier */
-  writeString(12, 'fmt ');
-  /* format chunk length */
-  view.setUint32(16, 16, true);
-  /* sample format (raw PCM 1) */
-  view.setUint16(20, 1, true);
-  /* channel count (mono 1) */
-  view.setUint16(22, 1, true);
-  /* sample rate */
-  view.setUint32(24, sampleRate, true);
-  /* byte rate (sampleRate * 2) */
-  view.setUint32(28, sampleRate * 2, true);
-  /* block align (2) */
-  view.setUint16(32, 2, true);
-  /* bits per sample (16) */
-  view.setUint16(34, 16, true);
-  /* data chunk identifier */
-  writeString(36, 'data');
-  /* data chunk length */
-  view.setUint32(40, samples.length * 2, true);
-
-  /* float32 to int16 PCM */
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++, offset += 2) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-  }
-
-  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
   onClassifyFile,
+  onRaspberryPiMic,
   isLoading,
 }) => {
   const [activeTab, setActiveTab] = useState<'upload' | 'mic'>('upload');
@@ -68,22 +22,6 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
   const [fileCurrentTime, setFileCurrentTime] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const fileAudioRef = useRef<HTMLAudioElement | null>(null);
-
-  // Live microphone recording state
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
-  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
-  
-  // Audio PCM & Canvas visualizer refs
-  const audioChunksRef = useRef<Blob[]>([]);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const timerRef = useRef<number | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
 
   // Advanced settings state
   const [showSettings, setShowSettings] = useState(false);
@@ -150,157 +88,11 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  // Pure PCM WAV Microphone Recording via Native MediaRecorder + decodeAudioData
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
-      audioContextRef.current = audioCtx;
-
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 128;
-      analyserRef.current = analyser;
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
-
-      mediaRecorder.start(100);
-      setIsRecording(true);
-      setRecordingTime(0);
-
-      timerRef.current = window.setInterval(() => {
-        setRecordingTime((prev) => prev + 1);
-      }, 1000);
-
-      drawWaveform();
-    } catch (err) {
-      alert('Microphone access was denied or not supported by browser.');
-    }
-  };
-
-  const stopRecording = () => {
-    if (!isRecording || !mediaRecorderRef.current) return;
-    setIsRecording(false);
-
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-
-    mediaRecorderRef.current.onstop = async () => {
-      try {
-        const rawBlob = new Blob(audioChunksRef.current, {
-          type: mediaRecorderRef.current?.mimeType || 'audio/webm',
-        });
-
-        const arrayBuffer = await rawBlob.arrayBuffer();
-        const tempCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const decodedBuffer = await tempCtx.decodeAudioData(arrayBuffer);
-        const pcmData = decodedBuffer.getChannelData(0);
-        const sampleRate = decodedBuffer.sampleRate;
-        tempCtx.close();
-
-        // Gain normalization: scale quiet microphone input to 85% peak
-        let peak = 0;
-        for (let i = 0; i < pcmData.length; i++) {
-          const abs = Math.abs(pcmData[i]);
-          if (abs > peak) peak = abs;
-        }
-
-        if (peak > 0.0001 && peak < 0.8) {
-          const scale = 0.85 / peak;
-          for (let i = 0; i < pcmData.length; i++) {
-            pcmData[i] = pcmData[i] * scale;
-          }
-        }
-
-        // Encode pristine 16-bit RIFF PCM WAV Blob
-        const wavBlob = encodeWAV(pcmData, sampleRate);
-        setRecordedBlob(wavBlob);
-
-        if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
-        setRecordedAudioUrl(URL.createObjectURL(wavBlob));
-      } catch (err) {
-        console.error('Failed to decode mic recording:', err);
-        const fallbackBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setRecordedBlob(fallbackBlob);
-        if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
-        setRecordedAudioUrl(URL.createObjectURL(fallbackBlob));
-      } finally {
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-          mediaStreamRef.current = null;
-        }
-        if (audioContextRef.current) {
-          audioContextRef.current.close();
-          audioContextRef.current = null;
-        }
-      }
-    };
-
-    mediaRecorderRef.current.stop();
-  };
-
-  const drawWaveform = () => {
-    if (!canvasRef.current || !analyserRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
-    const render = () => {
-      if (!isRecording && !analyserRef.current) return;
-      animationFrameRef.current = requestAnimationFrame(render);
-      analyserRef.current?.getByteFrequencyData(dataArray);
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const barWidth = (canvas.width / bufferLength) * 1.8;
-      let x = 0;
-
-      for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * canvas.height;
-        const gradient = ctx.createLinearGradient(0, canvas.height, 0, 0);
-        gradient.addColorStop(0, '#06b6d4');
-        gradient.addColorStop(1, '#6366f1');
-
-        ctx.fillStyle = gradient;
-        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-        x += barWidth + 3;
-      }
-    };
-
-    render();
-  };
-
   useEffect(() => {
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       if (fileAudioUrl) URL.revokeObjectURL(fileAudioUrl);
-      if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
     };
-  }, []);
+  }, [fileAudioUrl]);
 
   const getOptions = () => ({
     useVoting,
@@ -557,60 +349,30 @@ export const AudioInputSection: React.FC<AudioInputSectionProps> = ({
           <div className="space-y-4">
             <div className="p-6 rounded-2xl bg-obsidian-950/60 border border-slate-800 flex flex-col items-center justify-center gap-4 text-center">
               
-              {/* Live Canvas Visualizer */}
-              <div className="w-full h-24 bg-obsidian-900 rounded-xl border border-slate-800/80 overflow-hidden relative flex items-center justify-center">
-                <canvas ref={canvasRef} width={500} height={96} className="w-full h-full" />
-                {!isRecording && !recordedAudioUrl && (
-                  <p className="absolute text-xs text-slate-500 font-mono">
-                    Click "Start Recording" to capture live microphone audio
-                  </p>
-                )}
-              </div>
-
-              {/* Controls */}
-              <div className="flex items-center gap-4">
-                {!isRecording ? (
-                  <button
-                    onClick={startRecording}
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all duration-200 active:scale-95"
-                  >
-                    <Mic className="w-4 h-4" />
-                    <span>Start Recording</span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={stopRecording}
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold shadow-lg shadow-amber-600/20 transition-all duration-200 active:scale-95 animate-pulse"
-                  >
-                    <Square className="w-4 h-4 fill-white" />
-                    <span>Stop Recording ({recordingTime}s)</span>
-                  </button>
-                )}
-              </div>
-
-              {recordedAudioUrl && (
-                <div className="w-full p-4 rounded-xl bg-obsidian-900 border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 mt-2">
-                  <div className="flex items-center gap-2 text-xs font-mono text-slate-300">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-                    <span>Recorded Audio Sound Ready (.WAV)</span>
-                  </div>
-
-                  <audio controls src={recordedAudioUrl} className="h-8 max-w-[240px]" />
-
-                  <button
-                    onClick={() => recordedBlob && onClassifyFile(recordedBlob, getOptions())}
-                    disabled={isLoading || !recordedBlob}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-electric-indigo to-electric-cyan hover:from-electric-indigo/90 hover:to-electric-cyan/90 text-white text-xs font-bold shadow-lg shadow-electric-indigo/20 transition-all duration-200 disabled:opacity-50 active:scale-95 flex items-center justify-center gap-2"
-                  >
-                    {isLoading ? (
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <Play className="w-4 h-4 fill-white" />
-                    )}
-                    <span>Classify Live Recording</span>
-                  </button>
+              {/* Raspberry Pi Info Card */}
+              <div className="w-full p-4 rounded-xl bg-obsidian-900 border border-slate-800 flex flex-col items-center justify-center gap-2">
+                <div className="w-12 h-12 rounded-2xl bg-rose-600/15 border border-rose-600/30 flex items-center justify-center">
+                  <Mic className="w-6 h-6 text-rose-400" />
                 </div>
-              )}
+                <p className="text-xs font-semibold text-white">Raspberry Pi UM1002</p>
+                <p className="text-[10px] font-mono text-slate-400">
+                  3s clip • 44.1 kHz stereo → 16 kHz mono • silence-gated
+                </p>
+              </div>
+
+              {/* Primary Action Button */}
+              <button
+                onClick={onRaspberryPiMic}
+                disabled={isLoading}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all duration-200 active:scale-95 disabled:opacity-50"
+              >
+                <Mic className="w-4 h-4" />
+                <span>
+                  {isLoading
+                    ? "Listening on Raspberry Pi..."
+                    : "Detect Animal"}
+                </span>
+              </button>
 
             </div>
           </div>

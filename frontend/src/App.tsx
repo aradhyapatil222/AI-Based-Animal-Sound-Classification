@@ -73,6 +73,55 @@ export function App() {
     }
   };
 
+  const handleRaspberryPiMic = async () => {
+    setIsLoading(true);
+    setErrorMsg(null);
+
+    try {
+      const formData = new FormData();
+
+      formData.append('use_voting', 'true');
+      formData.append('voting_step', '0.5');
+
+      const res = await fetch(
+        `${API_BASE}/api/live-mic/classify`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(
+          data.detail || 'Raspberry Pi microphone failed.'
+        );
+      }
+
+      if (data.silent) {
+        setErrorMsg(
+          'No significant animal sound detected. Try again.'
+        );
+        return;
+      }
+
+      setResult(data);
+
+    } catch (err: any) {
+
+      setErrorMsg(
+        err.message ||
+        'Could not access the Raspberry Pi microphone.'
+      );
+
+    } finally {
+
+      setIsLoading(false);
+
+    }
+  };
+
   return (
     <div className="min-h-screen bg-obsidian-900 text-slate-100 flex flex-col font-sans selection:bg-electric-indigo/30">
       
@@ -108,6 +157,7 @@ export function App() {
           <div className="lg:col-span-5 space-y-6">
             <AudioInputSection
               onClassifyFile={handleClassifyFile}
+              onRaspberryPiMic={handleRaspberryPiMic}
               isLoading={isLoading}
             />
           </div>
